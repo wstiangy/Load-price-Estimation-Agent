@@ -1,0 +1,18 @@
+services:
+  - name: ieee14-lmp-agent
+    type: web
+    runtime: python
+    plan: free
+    region: ohio
+    buildCommand: pip install -r requirements.txt && pip install -e .
+    startCommand: python -m lmp_agent.dashboard
+    healthCheckPath: /
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: HOST
+        value: 0.0.0.0
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
+      - key: OPENAI_API_KEY
+        sync: false

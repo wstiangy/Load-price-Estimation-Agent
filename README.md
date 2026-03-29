@@ -50,6 +50,27 @@ This repository is configured for a Docker Space.
 
 The container serves the app on port `7860`, which matches the Space configuration.
 
+## Render
+
+This repo also includes a Render Blueprint in [render.yaml](C:\Users\guany\Dropbox\TAMU\Research\Load-price Estimation Agent\render.yaml).
+
+Fastest path:
+
+1. Push the latest code to GitHub.
+2. In Render, click `New +` -> `Blueprint`.
+3. Connect the GitHub repo and select this project.
+4. Render will detect `render.yaml` and create a Python web service.
+5. In the service environment settings, add `OPENAI_API_KEY` as a secret if you want the in-page chat assistant enabled.
+6. Trigger the first deploy and open the generated Render URL.
+
+The Render setup uses:
+
+- `buildCommand`: `pip install -r requirements.txt && pip install -e .`
+- `startCommand`: `python -m lmp_agent.dashboard`
+- `healthCheckPath`: `/`
+
+If your Render account does not offer the `free` instance type, change the plan in the Render UI before deployment.
+
 ## GitHub
 
 The repo also includes:
