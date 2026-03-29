@@ -4,7 +4,7 @@ colorFrom: blue
 colorTo: green
 sdk: docker
 app_port: 7860
-short_description: IEEE 14-bus nodal pricing, inverse load estimation, sub-bus disaggregation, and probabilistic price forecasting.
+short_description: IEEE 14-bus nodal pricing and load inference demo.
 suggested_hardware: cpu-basic
 tags:
   - power-systems
