@@ -7,3 +7,7 @@ __pycache__/
 outputs/
 pytest-cache-files-*/
 *.pyc
+HF_token.txt
+.env
+.env.*
+*.secret
