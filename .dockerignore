@@ -1,0 +1,11 @@
+.git
+.github
+.devcontainer
+.venv
+.tmp
+.mplcache
+outputs
+pytest-cache-files-*
+tests
+__pycache__
+*.pyc

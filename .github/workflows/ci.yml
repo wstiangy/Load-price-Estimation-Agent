@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+
+jobs:
+  test-and-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Run tests
+        env:
+          PYTHONPATH: src
+        run: python -m pytest
+
+      - name: Smoke run demo pipeline
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m lmp_agent --training-days 6 --monte-carlo-samples 4 --output-dir outputs/ci-smoke
+          test -f outputs/ci-smoke/report.md
+
+      - name: Upload smoke artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-smoke-output
+          path: outputs/ci-smoke

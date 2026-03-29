@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ieee14-lmp-agent"
+version = "0.1.0"
+description = "Research prototype for IEEE 14-bus nodal pricing, inverse load estimation, disaggregation, and probabilistic forecasting."
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+  "cvxpy>=1.8.2",
+  "fastapi>=0.135.2",
+  "highspy>=1.13.1",
+  "jinja2>=3.1.6",
+  "networkx>=3.6.1",
+  "numpy>=2.4.4",
+  "pandas>=3.0.1",
+  "plotly>=6.6.0",
+  "pydantic>=2.12.5",
+  "pypower>=5.1.19",
+  "pypsa>=1.1.2",
+  "scikit-learn>=1.8.0",
+  "scipy>=1.17.1",
+  "uvicorn>=0.42.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=9.0.2"]
+
+[project.scripts]
+lmp-agent-run = "lmp_agent.cli:main"
+lmp-agent-dashboard = "lmp_agent.dashboard:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q -p no:cacheprovider"
+filterwarnings = [
+  "ignore:The problem includes expressions that don't support CPP backend. Defaulting to the SCIPY backend for canonicalization.:UserWarning",
+]
