@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from html import escape
 from typing import Any
@@ -7,10 +8,12 @@ from typing import Any
 import networkx as nx
 import pandas as pd
 import plotly.graph_objects as go
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import BaseModel, Field
 
 from .agent import PricingWorkflowAgent
+from .chat import generate_chat_reply, llm_status
 from .config import RunConfig, WorkflowArtifacts
 
 app = FastAPI(title="IEEE 14-Bus Pricing Agent Dashboard")
@@ -54,6 +57,12 @@ EDGE_LIST = [
     ("Bus 12", "Bus 13"),
     ("Bus 13", "Bus 14"),
 ]
+
+
+class ChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
+    context: dict[str, Any]
+    previous_response_id: str | None = Field(default=None, max_length=200)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -198,6 +207,18 @@ def api_run(
     }
 
 
+@app.post("/api/chat", response_class=JSONResponse)
+def api_chat(request: ChatRequest) -> dict[str, Any]:
+    try:
+        return generate_chat_reply(
+            user_message=request.message,
+            page_context=request.context,
+            previous_response_id=request.previous_response_id,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 @app.get("/run", response_class=HTMLResponse)
 def run_page(
     seed: int = 7,
@@ -229,6 +250,7 @@ def run_page(
     highlights = _highlights_html(artifacts, focus_hour)
     bus_table = _bus_snapshot_table_html(artifacts, focus_hour)
     pipeline_strip = _pipeline_strip_html()
+    chat_panel = _llm_panel_html(artifacts, focus_hour)
     report_html = escape(artifacts.report_markdown)
 
     return f"""
@@ -306,6 +328,42 @@ def run_page(
           .note {{
             margin-top: 12px; padding: 12px 14px; border-radius: 14px; background: rgba(178,74,48,0.06); color: var(--muted);
           }}
+          .chat-shell {{
+            display: grid; gap: 12px;
+          }}
+          .chat-transcript {{
+            min-height: 260px; max-height: 420px; overflow-y: auto; padding: 14px;
+            border: 1px solid rgba(18,37,61,0.08); border-radius: 16px; background: rgba(247,250,252,0.88);
+          }}
+          .chat-message {{
+            margin-bottom: 12px; padding: 12px 13px; border-radius: 14px; line-height: 1.55;
+          }}
+          .chat-message strong {{
+            display: block; margin-bottom: 6px; font-size: 0.82rem; letter-spacing: 0.06em; text-transform: uppercase;
+          }}
+          .chat-message.user {{ background: rgba(23,57,92,0.08); }}
+          .chat-message.assistant {{ background: rgba(47,111,113,0.10); }}
+          .chat-message.status {{ background: rgba(178,74,48,0.08); color: var(--muted); }}
+          .chat-controls {{ display: grid; gap: 10px; }}
+          .chat-controls textarea {{
+            width: 100%; min-height: 104px; resize: vertical; padding: 12px 14px;
+            border-radius: 16px; border: 1px solid rgba(18,37,61,0.12); background: rgba(255,255,255,0.94);
+            color: var(--ink); font: inherit;
+          }}
+          .chat-actions {{ display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }}
+          .chat-send {{
+            border: 0; cursor: pointer; padding: 11px 16px; border-radius: 999px;
+            background: linear-gradient(135deg, #17395c, #2f6f71); color: white; box-shadow: 0 12px 22px rgba(23,57,92,0.18);
+            font: inherit;
+          }}
+          .chat-send[disabled] {{ opacity: 0.55; cursor: wait; }}
+          .chat-hint {{ color: var(--muted); font-size: 0.94rem; }}
+          .chat-suggestions {{ display: flex; flex-wrap: wrap; gap: 8px; }}
+          .chat-chip {{
+            border: 1px solid rgba(18,37,61,0.10); background: rgba(18,37,61,0.05); color: var(--ink);
+            border-radius: 999px; padding: 8px 12px; cursor: pointer; font: inherit;
+          }}
+          .chat-chip[disabled] {{ cursor: default; opacity: 0.65; }}
           pre {{ margin: 0; white-space: pre-wrap; font-size: 0.95rem; line-height: 1.55; }}
           @media (max-width: 1080px) {{
             .hero-grid, .layout, .secondary-grid, .stats, .pipeline {{ grid-template-columns: 1fr; }}
@@ -371,6 +429,12 @@ def run_page(
               </div>
             </div>
             <div class="stack">
+              <div class="panel">
+                <span class="section-label">LLM Copilot</span>
+                <h2>Interactive Research Assistant</h2>
+                <p>Ask the page to interpret the current topology snapshot, explain a bus-level price pattern, or summarize forecast uncertainty in plain language.</p>
+                {chat_panel}
+              </div>
               <div class="panel">
                 <span class="section-label">Bus Snapshot</span>
                 <h2>Bus-Level Load and Price Table</h2>
@@ -625,6 +689,173 @@ def _bus_snapshot_table_html(artifacts: WorkflowArtifacts, focus_hour: int) -> s
         f"<tbody>{''.join(rows)}</tbody>"
         "</table>"
     )
+
+
+def _chat_context_payload(artifacts: WorkflowArtifacts, focus_hour: int) -> dict[str, Any]:
+    focus_lmp = artifacts.current_opf.bus_lmp.loc[focus_hour]
+    focus_load = artifacts.current_truth_bus_load.loc[focus_hour]
+    est_load = artifacts.bus_estimate.estimated_bus_load.loc[focus_hour]
+    quantiles = artifacts.forecast.bus_lmp_quantiles
+    q_lo = quantiles[min(quantiles)].loc[focus_hour]
+    q_mid = quantiles[sorted(quantiles)[len(quantiles) // 2]].loc[focus_hour]
+    q_hi = quantiles[max(quantiles)].loc[focus_hour]
+
+    bus_snapshot = []
+    for bus in sorted(focus_lmp.index, key=lambda name: int(name.split()[-1])):
+        bus_snapshot.append(
+            {
+                "bus": bus,
+                "load_mw": round(float(focus_load[bus]), 3),
+                "estimated_load_mw": round(float(est_load[bus]), 3),
+                "load_gap_mw": round(float(est_load[bus] - focus_load[bus]), 3),
+                "lmp": round(float(focus_lmp[bus]), 3),
+                "forecast_p10_lmp": round(float(q_lo[bus]), 3),
+                "forecast_p50_lmp": round(float(q_mid[bus]), 3),
+                "forecast_p90_lmp": round(float(q_hi[bus]), 3),
+            }
+        )
+
+    top_price_bus = focus_lmp.idxmax()
+    top_load_bus = focus_load.idxmax()
+    return {
+        "case_id": artifacts.config.case_id,
+        "focus_hour": focus_hour,
+        "run_config": {
+            "seed": artifacts.config.seed,
+            "training_days": artifacts.config.training_days,
+            "demand_scale": artifacts.config.demand_scale,
+            "noise_scale": artifacts.config.noise_scale,
+            "monte_carlo_samples": artifacts.config.monte_carlo_samples,
+        },
+        "metrics": {key: round(float(value), 4) for key, value in artifacts.metrics.items()},
+        "snapshot_summary": {
+            "total_load_mw": round(float(focus_load.sum()), 3),
+            "highest_lmp_bus": top_price_bus,
+            "highest_lmp": round(float(focus_lmp[top_price_bus]), 3),
+            "largest_load_bus": top_load_bus,
+            "largest_load_mw": round(float(focus_load[top_load_bus]), 3),
+        },
+        "bus_snapshot": bus_snapshot,
+    }
+
+
+def _llm_panel_html(artifacts: WorkflowArtifacts, focus_hour: int) -> str:
+    available, status_text = llm_status()
+    suggestions = [
+        "Summarize the most interesting price pattern at this focus hour.",
+        "Which buses look most stressed or congested, and why?",
+        "Explain the gap between true and inferred load in plain language.",
+        "What does the P10-P90 forecast band suggest about future price risk?",
+    ]
+    context_json = json.dumps(_chat_context_payload(artifacts, focus_hour), ensure_ascii=True).replace("</", "<\\/")
+    suggestion_html = "".join(
+        f"<button class='chat-chip' type='button' data-chat-prompt='{escape(prompt, quote=True)}' {'disabled' if not available else ''}>{escape(prompt)}</button>"
+        for prompt in suggestions
+    )
+
+    disabled_block = ""
+    if not available:
+        disabled_block = (
+            "<div class='chat-message status'>"
+            "<strong>Assistant Offline</strong>"
+            f"{escape(status_text)} Add the secret to the deployment and reload the page."
+            "</div>"
+        )
+
+    return f"""
+    <div class="chat-shell">
+      <div id="llm-transcript" class="chat-transcript">
+        <div class="chat-message assistant">
+          <strong>Research Assistant</strong>
+          Ask about the current run, topology labels, bus-level LMPs, inverse-load errors, or forecast uncertainty.
+        </div>
+        {disabled_block}
+      </div>
+      <div class="chat-suggestions">{suggestion_html}</div>
+      <div class="chat-controls">
+        <textarea id="llm-input" placeholder="Example: Why is Bus 9 relatively expensive at the selected hour?" {'disabled' if not available else ''}></textarea>
+        <div class="chat-actions">
+          <button id="llm-send" class="chat-send" type="button" {'disabled' if not available else ''}>Ask The Copilot</button>
+          <span id="llm-status" class="chat-hint">{escape(status_text)}</span>
+        </div>
+      </div>
+      <script>
+        (() => {{
+          const enabled = {str(available).lower()};
+          const chatContext = {context_json};
+          const transcript = document.getElementById("llm-transcript");
+          const input = document.getElementById("llm-input");
+          const sendButton = document.getElementById("llm-send");
+          const statusEl = document.getElementById("llm-status");
+          const chips = Array.from(document.querySelectorAll("[data-chat-prompt]"));
+          let previousResponseId = null;
+
+          function appendMessage(role, title, text) {{
+            const block = document.createElement("div");
+            block.className = `chat-message ${{role}}`;
+            const safeText = String(text ?? "");
+            block.innerHTML = `<strong>${{title}}</strong>${{safeText.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\\n/g, "<br>")}}`;
+            transcript.appendChild(block);
+            transcript.scrollTop = transcript.scrollHeight;
+          }}
+
+          async function sendPrompt(prompt) {{
+            if (!enabled) {{
+              return;
+            }}
+            const message = prompt.trim();
+            if (!message) {{
+              statusEl.textContent = "Enter a question before sending.";
+              return;
+            }}
+            appendMessage("user", "You", message);
+            input.value = "";
+            sendButton.disabled = true;
+            statusEl.textContent = "Thinking about the current run...";
+            try {{
+              const response = await fetch("/api/chat", {{
+                method: "POST",
+                headers: {{ "Content-Type": "application/json" }},
+                body: JSON.stringify({{
+                  message,
+                  context: chatContext,
+                  previous_response_id: previousResponseId,
+                }}),
+              }});
+              const payload = await response.json();
+              if (!response.ok) {{
+                throw new Error(payload.detail || "The research assistant request failed.");
+              }}
+              previousResponseId = payload.response_id || previousResponseId;
+              appendMessage("assistant", "Research Assistant", payload.reply || "No text response was returned.");
+              statusEl.textContent = payload.model ? `Answered with ${{payload.model}}.` : "Answered.";
+            }} catch (error) {{
+              appendMessage("status", "System", error.message || "The request failed.");
+              statusEl.textContent = "The assistant could not answer this request.";
+            }} finally {{
+              sendButton.disabled = false;
+            }}
+          }}
+
+          if (enabled) {{
+            sendButton.addEventListener("click", () => sendPrompt(input.value));
+            input.addEventListener("keydown", (event) => {{
+              if (event.key === "Enter" && !event.shiftKey) {{
+                event.preventDefault();
+                sendPrompt(input.value);
+              }}
+            }});
+            chips.forEach((chip) => {{
+              chip.addEventListener("click", () => {{
+                input.value = chip.dataset.chatPrompt || "";
+                sendPrompt(input.value);
+              }});
+            }});
+          }}
+        }})();
+      </script>
+    </div>
+    """
 
 
 def _rgba_from_hex(color: str, alpha: float) -> str:

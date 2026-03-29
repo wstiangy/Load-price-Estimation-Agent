@@ -23,6 +23,7 @@ A research demo for electricity-price analysis on the IEEE 14-bus test system. T
 - Sub-bus load disaggregation under each parent bus
 - Sub-bus probabilistic load forecasting
 - Probabilistic future LMP simulation by rerunning OPF on sampled load scenarios
+- An in-page LLM copilot that can explain the current run, topology snapshot, and forecast bands
 
 ## Local Run
 
@@ -30,6 +31,8 @@ A research demo for electricity-price analysis on the IEEE 14-bus test system. T
 py -m venv .venv
 .\.venv\Scripts\python -m pip install -r requirements.txt
 $env:PYTHONPATH="src"
+$env:OPENAI_API_KEY="sk-..."
+$env:OPENAI_MODEL="gpt-4o-mini"
 .\.venv\Scripts\python -m lmp_agent --output-dir outputs\run-1
 .\.venv\Scripts\python -m uvicorn lmp_agent.dashboard:app --host 127.0.0.1 --port 8000
 ```
@@ -41,7 +44,9 @@ This repository is configured for a Docker Space.
 1. Create a new Hugging Face Space and choose `Docker` as the SDK.
 2. Push this repository to the Space.
 3. Hugging Face will read the YAML block at the top of this README and build the included `Dockerfile`.
-4. After the build finishes, open the Space URL and click `Run Default Scenario`.
+4. In the Space settings, add `OPENAI_API_KEY` as a secret if you want the chat assistant enabled.
+5. Optional: add `OPENAI_MODEL` if you want to override the default `gpt-4o-mini`.
+6. After the build finishes, open the Space URL and click `Run Default Scenario`.
 
 The container serves the app on port `7860`, which matches the Space configuration.
 
@@ -60,6 +65,7 @@ The repo also includes:
 - `src/lmp_agent/disaggregation.py`: constrained sub-bus allocation
 - `src/lmp_agent/forecast.py`: quantile forecasting and probabilistic price simulation
 - `src/lmp_agent/agent.py`: fixed workflow orchestrator
+- `src/lmp_agent/chat.py`: OpenAI-backed chat helper for the in-page research assistant
 - `src/lmp_agent/dashboard.py`: FastAPI dashboard
 
 ## Notes
