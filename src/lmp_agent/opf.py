@@ -36,6 +36,14 @@ class OPFRunner:
             line_component.columns = [f"Line::{name}" for name in line_component.columns]
             line_flows.append(line_component)
         flow_frame = pd.concat(line_flows, axis=1) if line_flows else pd.DataFrame(index=bus_loads.index)
+        line_limits = {f"Line::{name}": float(row["s_nom"]) for name, row in network.lines.iterrows()}
+        line_endpoints = {
+            f"Line::{name}": {"from_bus": str(row["bus0"]), "to_bus": str(row["bus1"])}
+            for name, row in network.lines.iterrows()
+        }
+        generator_bus_map = {
+            str(row["name"]): f"Bus {int(row['gen_bus'])}" for _, row in self.case_data.generator_table.iterrows()
+        }
 
         return OPFResult(
             bus_lmp=network.buses_t.marginal_price.copy(),
@@ -44,7 +52,14 @@ class OPFRunner:
             congestion_flags=self._congestion_flags(network, flow_frame),
             feasible=feasible,
             objective=float(network.objective if network.objective is not None else np.nan),
-            metadata={"status": status, "termination": termination},
+            metadata={
+                "status": status,
+                "termination": termination,
+                "generator_costs": generator_costs.copy(),
+                "line_limits": line_limits,
+                "line_endpoints": line_endpoints,
+                "generator_bus_map": generator_bus_map,
+            },
         )
 
     def _build_network(

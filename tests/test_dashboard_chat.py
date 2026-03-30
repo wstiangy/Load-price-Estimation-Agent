@@ -3,7 +3,7 @@ from fastapi import HTTPException
 
 from lmp_agent.agent import PricingWorkflowAgent
 from lmp_agent.config import RunConfig
-from lmp_agent.dashboard import ChatRequest, _chat_context_payload, _llm_panel_html, api_chat
+from lmp_agent.dashboard import ChatRequest, _chat_context_payload, _llm_panel_html, api_chat, run_page
 
 
 def test_chat_context_includes_all_buses():
@@ -12,6 +12,8 @@ def test_chat_context_includes_all_buses():
     assert context["case_id"] == "ieee14"
     assert context["focus_hour"] == 12
     assert len(context["bus_snapshot"]) == 14
+    assert len(context["generator_snapshot"]) == 5
+    assert len(context["line_snapshot"]) == 20
     assert context["snapshot_summary"]["highest_lmp_bus"].startswith("Bus ")
 
 
@@ -33,3 +35,10 @@ def test_api_chat_maps_runtime_error_to_service_unavailable(monkeypatch):
         api_chat(request)
     assert exc_info.value.status_code == 503
     assert "OPENAI_API_KEY" in str(exc_info.value.detail)
+
+
+def test_run_page_contains_generator_and_line_sections():
+    html = run_page(training_days=6, monte_carlo_samples=4, focus_hour=18)
+    assert "Generator Dispatch and Marginal Cost" in html
+    assert "Line Loading and Congestion Margin" in html
+    assert "Single-Line Topology" in html

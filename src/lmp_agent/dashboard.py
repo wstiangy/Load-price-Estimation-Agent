@@ -19,20 +19,28 @@ from .config import RunConfig, WorkflowArtifacts
 app = FastAPI(title="IEEE 14-Bus Pricing Agent Dashboard")
 
 BUS_POSITIONS: dict[str, tuple[float, float]] = {
-    "Bus 1": (0.08, 0.60),
-    "Bus 2": (0.22, 0.60),
+    "Bus 1": (0.08, 0.52),
+    "Bus 2": (0.22, 0.52),
     "Bus 3": (0.36, 0.60),
-    "Bus 4": (0.30, 0.42),
-    "Bus 5": (0.22, 0.30),
-    "Bus 6": (0.34, 0.16),
-    "Bus 7": (0.48, 0.42),
-    "Bus 8": (0.62, 0.42),
-    "Bus 9": (0.48, 0.28),
-    "Bus 10": (0.62, 0.28),
-    "Bus 11": (0.76, 0.28),
-    "Bus 12": (0.52, 0.10),
-    "Bus 13": (0.68, 0.10),
-    "Bus 14": (0.84, 0.18),
+    "Bus 4": (0.36, 0.42),
+    "Bus 5": (0.22, 0.28),
+    "Bus 6": (0.40, 0.14),
+    "Bus 7": (0.58, 0.52),
+    "Bus 8": (0.74, 0.52),
+    "Bus 9": (0.58, 0.34),
+    "Bus 10": (0.74, 0.34),
+    "Bus 11": (0.88, 0.34),
+    "Bus 12": (0.58, 0.10),
+    "Bus 13": (0.74, 0.10),
+    "Bus 14": (0.90, 0.18),
+}
+
+GENERATOR_POSITIONS: dict[str, tuple[float, float]] = {
+    "G1": (0.03, 0.60),
+    "G2": (0.18, 0.64),
+    "G3": (0.41, 0.70),
+    "G4": (0.31, 0.03),
+    "G5": (0.79, 0.62),
 }
 
 EDGE_LIST = [
@@ -249,6 +257,8 @@ def run_page(
     summary_cards = _summary_cards_html(artifacts, focus_hour)
     highlights = _highlights_html(artifacts, focus_hour)
     bus_table = _bus_snapshot_table_html(artifacts, focus_hour)
+    generator_table = _generator_snapshot_table_html(artifacts, focus_hour)
+    line_table = _line_snapshot_table_html(artifacts, focus_hour)
     pipeline_strip = _pipeline_strip_html()
     chat_panel = _llm_panel_html(artifacts, focus_hour)
     report_html = escape(artifacts.report_markdown)
@@ -377,8 +387,8 @@ def run_page(
             <div class="hero-grid">
               <div>
                 <h1>Topology-Centered Price and Load Inference Demo</h1>
-                <p>This page is structured like a compact paper demo: the topology view is the centerpiece, the workflow is summarized explicitly, and the bus-level load and price values are printed directly next to each IEEE 14-bus node.</p>
-                <p>The highlighted snapshot below uses <strong>hour {focus_hour:02d}</strong>. Node color encodes LMP, node size scales with load, and labels show both the realized demand and marginal price for each bus.</p>
+                <p>This page is structured like a compact paper demo: the topology view is the centerpiece, the workflow is summarized explicitly, and the single-line topology is annotated with generator dispatch, marginal costs, nodal LMPs, line flows, and congestion headroom.</p>
+                <p>The highlighted snapshot below uses <strong>hour {focus_hour:02d}</strong>. Generator callouts show dispatch and cost, load buses show LMP, and each line segment displays its MW flow together with the remaining margin before congestion.</p>
                 <div class="run-meta">
                   <span class="chip">seed={seed}</span>
                   <span class="chip">training_days={training_days}</span>
@@ -408,10 +418,10 @@ def run_page(
             <div class="stack">
               <div class="panel">
                 <span class="section-label">Topology Snapshot</span>
-                <h2>IEEE 14-Bus Topology With Bus-Edge Load and Price Labels</h2>
-                <p>The topology plot below uses a fixed IEEE 14-bus layout so that load and price comparisons remain spatially stable across runs.</p>
+                <h2>IEEE 14-Bus Single-Line Topology With Generator, LMP, and Line Labels</h2>
+                <p>The topology plot below uses a fixed IEEE 14-bus single-line layout so that the labels remain spatially stable and close to the reference IEEE 14-bus diagram.</p>
                 {topology_plot}
-                <div class="note">Warmer nodes indicate higher LMP. Larger nodes indicate larger realized bus demand. The upper label near each node is the LMP, and the lower label is the load at the selected hour.</div>
+                <div class="note">Warmer lines are closer to congestion. Generator callouts show dispatch and marginal cost, bus callouts show LMP, and line callouts show signed MW flow with remaining thermal headroom.</div>
               </div>
               <div class="secondary-grid">
                 <div class="panel">
@@ -434,6 +444,18 @@ def run_page(
                 <h2>Interactive Research Assistant</h2>
                 <p>Ask the page to interpret the current topology snapshot, explain a bus-level price pattern, or summarize forecast uncertainty in plain language.</p>
                 {chat_panel}
+              </div>
+              <div class="panel">
+                <span class="section-label">Generator Snapshot</span>
+                <h2>Generator Dispatch and Marginal Cost</h2>
+                <p>Each online generator is mapped to its parent bus and shown using the same hour selected in the topology snapshot.</p>
+                {generator_table}
+              </div>
+              <div class="panel">
+                <span class="section-label">Line Monitor</span>
+                <h2>Line Loading and Congestion Margin</h2>
+                <p>Headroom is computed as thermal limit minus absolute flow, so near-zero values indicate lines approaching congestion.</p>
+                {line_table}
               </div>
               <div class="panel">
                 <span class="section-label">Bus Snapshot</span>
@@ -502,6 +524,7 @@ def _highlights_html(artifacts: WorkflowArtifacts, focus_hour: int) -> str:
     focus_lmp = artifacts.current_opf.bus_lmp.loc[focus_hour]
     focus_load = artifacts.current_truth_bus_load.loc[focus_hour]
     est_load = artifacts.bus_estimate.estimated_bus_load.loc[focus_hour]
+    line_snapshot = _line_snapshot_records(artifacts, focus_hour)
     largest_gap_bus = (est_load - focus_load).abs().idxmax()
     largest_gap = float((est_load - focus_load).abs().max())
     highest_price_bus = focus_lmp.idxmax()
@@ -512,9 +535,11 @@ def _highlights_html(artifacts: WorkflowArtifacts, focus_hour: int) -> str:
     ).loc[focus_hour]
     widest_bus = future_uncertainty.idxmax()
     widest_band = float(future_uncertainty.max())
+    tightest_line = min(line_snapshot, key=lambda row: row["headroom_mw"])
     items = [
         f"<p><strong>{escape(highest_price_bus)}</strong> is the costliest node at hour {focus_hour:02d}, with LMP {highest_price:.2f}.</p>",
         f"<p>The largest one-hour inversion miss appears at <strong>{escape(largest_gap_bus)}</strong>, with absolute load gap {largest_gap:.2f} MW.</p>",
+        f"<p>The most stressed line is <strong>{escape(tightest_line['line_name'])}</strong>, carrying {tightest_line['flow_mw']:+.2f} MW with only {tightest_line['headroom_mw']:.2f} MW of remaining margin.</p>",
         f"<p>Future price uncertainty is widest at <strong>{escape(widest_bus)}</strong>, where the P10-P90 spread reaches {widest_band:.2f}.</p>",
         "<p>The market forecast remains physically grounded because future demand scenarios are propagated through repeated OPF solves instead of a direct black-box price model.</p>",
     ]
@@ -527,18 +552,45 @@ def _topology_plot_html(artifacts: WorkflowArtifacts, focus_hour: int) -> str:
     focus_lmp = artifacts.current_opf.bus_lmp.loc[focus_hour]
     focus_load = artifacts.current_truth_bus_load.loc[focus_hour]
     estimated_load = artifacts.bus_estimate.estimated_bus_load.loc[focus_hour]
+    line_snapshot = _line_snapshot_records(artifacts, focus_hour)
+    generator_snapshot = _generator_snapshot_records(artifacts, focus_hour)
 
     edge_traces = []
-    for left, right in graph.edges():
+    annotations: list[dict[str, Any]] = []
+    max_loading = max((row["loading_pct"] for row in line_snapshot), default=1.0)
+    for row in line_snapshot:
+        left = row["from_bus"]
+        right = row["to_bus"]
         x0, y0 = BUS_POSITIONS[left]
         x1, y1 = BUS_POSITIONS[right]
+        loading_ratio = row["loading_pct"] / max(max_loading, 1e-6)
         edge_traces.append(
             go.Scatter(
                 x=[x0, x1],
                 y=[y0, y1],
                 mode="lines",
-                line=dict(color="#8fa3b8", width=2.4),
-                hoverinfo="skip",
+                line=dict(color=f"rgba(178,74,48,{0.28 + 0.60 * loading_ratio:.3f})", width=2.0 + 2.8 * loading_ratio),
+                hovertemplate=(
+                    f"{row['line_name']}<br>"
+                    f"Flow: {row['flow_mw']:+.2f} MW<br>"
+                    f"Limit: {row['limit_mw']:.2f} MW<br>"
+                    f"Headroom: {row['headroom_mw']:.2f} MW<br>"
+                    f"Loading: {row['loading_pct']:.1f}%<extra></extra>"
+                ),
+            )
+        )
+        midpoint_x = (x0 + x1) / 2.0
+        midpoint_y = (y0 + y1) / 2.0
+        annotations.append(
+            dict(
+                x=midpoint_x,
+                y=midpoint_y,
+                text=f"{row['flow_mw']:+.0f} MW<br>{row['headroom_mw']:.0f} MW margin",
+                showarrow=False,
+                font=dict(size=9, color="#5a241a"),
+                bgcolor="rgba(255,248,244,0.90)",
+                bordercolor="rgba(178,74,48,0.16)",
+                borderpad=2,
             )
         )
 
@@ -551,10 +603,10 @@ def _topology_plot_html(artifacts: WorkflowArtifacts, focus_hour: int) -> str:
         textposition="middle center",
         textfont=dict(color="white", size=11),
         marker=dict(
-            size=[16 + float(focus_load.get(node, 0.0)) * 0.36 for node in nodes],
+            size=[17 + float(focus_load.get(node, 0.0)) * 0.32 for node in nodes],
             color=[float(focus_lmp.get(node, 0.0)) for node in nodes],
             colorscale="YlOrRd",
-            colorbar=dict(title="LMP"),
+            colorbar=dict(title="Bus LMP"),
             line=dict(width=1.5, color="#1c3248"),
         ),
         hovertext=[
@@ -568,33 +620,107 @@ def _topology_plot_html(artifacts: WorkflowArtifacts, focus_hour: int) -> str:
         ],
         hovertemplate="%{hovertext}<extra></extra>",
     )
-    price_trace = go.Scatter(
-        x=[BUS_POSITIONS[node][0] + 0.035 for node in nodes],
-        y=[BUS_POSITIONS[node][1] + 0.055 for node in nodes],
-        mode="text",
-        text=[f"${float(focus_lmp.get(node, 0.0)):.1f}" for node in nodes],
-        textfont=dict(size=11, color="#a8381f"),
-        hoverinfo="skip",
-    )
-    load_trace = go.Scatter(
-        x=[BUS_POSITIONS[node][0] - 0.045 for node in nodes],
-        y=[BUS_POSITIONS[node][1] - 0.055 for node in nodes],
-        mode="text",
-        text=[f"{float(focus_load.get(node, 0.0)):.1f} MW" for node in nodes],
-        textfont=dict(size=10, color="#224d64"),
-        hoverinfo="skip",
-    )
 
-    fig = go.Figure(edge_traces + [node_trace, price_trace, load_trace])
+    load_bus_nodes = [node for node in nodes if float(focus_load.get(node, 0.0)) > 1e-6]
+    for node in load_bus_nodes:
+        x, y = BUS_POSITIONS[node]
+        annotations.append(
+            dict(
+                x=x + 0.055,
+                y=y + 0.048,
+                text=f"{node}<br>LMP {float(focus_lmp[node]):.2f}",
+                showarrow=False,
+                font=dict(size=10, color="#12324f"),
+                bgcolor="rgba(248,252,255,0.94)",
+                bordercolor="rgba(18,37,61,0.18)",
+                borderpad=3,
+            )
+        )
+
+    gen_trace = go.Scatter(
+        x=[GENERATOR_POSITIONS[row["generator"]][0] for row in generator_snapshot],
+        y=[GENERATOR_POSITIONS[row["generator"]][1] for row in generator_snapshot],
+        mode="markers+text",
+        text=[row["generator"] for row in generator_snapshot],
+        textposition="middle center",
+        textfont=dict(color="white", size=10),
+        marker=dict(size=18, symbol="square", color="#2f6f71", line=dict(width=1.3, color="#17395c")),
+        hovertemplate=[
+            (
+                f"{row['generator']} @ {row['bus']}<br>"
+                f"Dispatch: {row['dispatch_mw']:.2f} MW<br>"
+                f"Cost: {row['cost']:.2f}<extra></extra>"
+            )
+            for row in generator_snapshot
+        ],
+    )
+    for row in generator_snapshot:
+        x, y = GENERATOR_POSITIONS[row["generator"]]
+        annotations.append(
+            dict(
+                x=x,
+                y=y + 0.06,
+                text=f"{row['generator']}<br>{row['dispatch_mw']:.1f} MW | c={row['cost']:.1f}",
+                showarrow=False,
+                font=dict(size=9, color="#124748"),
+                bgcolor="rgba(240,251,248,0.94)",
+                bordercolor="rgba(47,111,113,0.20)",
+                borderpad=3,
+            )
+        )
+
+    fig = go.Figure(edge_traces + [node_trace, gen_trace])
     fig.update_layout(
         margin=dict(l=0, r=0, t=0, b=0),
-        height=560,
+        height=620,
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        xaxis=dict(visible=False, range=[0.0, 0.95]),
-        yaxis=dict(visible=False, range=[0.0, 0.78]),
+        xaxis=dict(visible=False, range=[-0.02, 1.00]),
+        yaxis=dict(visible=False, range=[-0.04, 0.82]),
+        annotations=annotations,
     )
     return fig.to_html(full_html=False, include_plotlyjs="cdn")
+
+
+def _generator_snapshot_records(artifacts: WorkflowArtifacts, focus_hour: int) -> list[dict[str, Any]]:
+    dispatch = artifacts.current_opf.gen_dispatch.loc[focus_hour]
+    costs: pd.Series = artifacts.current_opf.metadata["generator_costs"].loc[focus_hour]
+    generator_bus_map: dict[str, str] = artifacts.current_opf.metadata["generator_bus_map"]
+    rows = []
+    for generator in dispatch.index:
+        rows.append(
+            {
+                "generator": generator,
+                "bus": generator_bus_map[generator],
+                "dispatch_mw": float(dispatch[generator]),
+                "cost": float(costs[generator]),
+            }
+        )
+    return rows
+
+
+def _line_snapshot_records(artifacts: WorkflowArtifacts, focus_hour: int) -> list[dict[str, Any]]:
+    flows = artifacts.current_opf.line_flows.loc[focus_hour]
+    line_limits: dict[str, float] = artifacts.current_opf.metadata["line_limits"]
+    endpoints: dict[str, dict[str, str]] = artifacts.current_opf.metadata["line_endpoints"]
+    rows = []
+    for line_name in flows.index:
+        limit = float(line_limits[line_name])
+        flow = float(flows[line_name])
+        headroom = max(limit - abs(flow), 0.0)
+        endpoint = endpoints[line_name]
+        rows.append(
+            {
+                "line_name": line_name.replace("Line::", ""),
+                "from_bus": endpoint["from_bus"],
+                "to_bus": endpoint["to_bus"],
+                "flow_mw": flow,
+                "limit_mw": limit,
+                "headroom_mw": headroom,
+                "loading_pct": abs(flow) / max(limit, 1e-6) * 100.0,
+            }
+        )
+    return rows
 
 
 def _load_comparison_plot_html(truth: pd.DataFrame, estimate: pd.DataFrame, focus_hour: int) -> str:
@@ -691,6 +817,40 @@ def _bus_snapshot_table_html(artifacts: WorkflowArtifacts, focus_hour: int) -> s
     )
 
 
+def _generator_snapshot_table_html(artifacts: WorkflowArtifacts, focus_hour: int) -> str:
+    rows = []
+    for row in _generator_snapshot_records(artifacts, focus_hour):
+        rows.append(
+            (
+                f"<tr><td>{escape(row['generator'])}</td><td>{escape(row['bus'])}</td>"
+                f"<td>{row['dispatch_mw']:.2f}</td><td>{row['cost']:.2f}</td></tr>"
+            )
+        )
+    return (
+        "<table>"
+        "<thead><tr><th>Generator</th><th>Bus</th><th>Dispatch (MW)</th><th>Cost</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody>"
+        "</table>"
+    )
+
+
+def _line_snapshot_table_html(artifacts: WorkflowArtifacts, focus_hour: int) -> str:
+    rows = []
+    for row in sorted(_line_snapshot_records(artifacts, focus_hour), key=lambda item: item["headroom_mw"]):
+        rows.append(
+            (
+                f"<tr><td>{escape(row['line_name'])}</td><td>{escape(row['from_bus'])}</td><td>{escape(row['to_bus'])}</td>"
+                f"<td>{row['flow_mw']:+.2f}</td><td>{row['limit_mw']:.2f}</td><td>{row['headroom_mw']:.2f}</td><td>{row['loading_pct']:.1f}%</td></tr>"
+            )
+        )
+    return (
+        "<table>"
+        "<thead><tr><th>Line</th><th>From</th><th>To</th><th>Flow (MW)</th><th>Limit</th><th>Margin</th><th>Loading</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody>"
+        "</table>"
+    )
+
+
 def _chat_context_payload(artifacts: WorkflowArtifacts, focus_hour: int) -> dict[str, Any]:
     focus_lmp = artifacts.current_opf.bus_lmp.loc[focus_hour]
     focus_load = artifacts.current_truth_bus_load.loc[focus_hour]
@@ -736,6 +896,27 @@ def _chat_context_payload(artifacts: WorkflowArtifacts, focus_hour: int) -> dict
             "largest_load_mw": round(float(focus_load[top_load_bus]), 3),
         },
         "bus_snapshot": bus_snapshot,
+        "generator_snapshot": [
+            {
+                "generator": row["generator"],
+                "bus": row["bus"],
+                "dispatch_mw": round(float(row["dispatch_mw"]), 3),
+                "cost": round(float(row["cost"]), 3),
+            }
+            for row in _generator_snapshot_records(artifacts, focus_hour)
+        ],
+        "line_snapshot": [
+            {
+                "line_name": row["line_name"],
+                "from_bus": row["from_bus"],
+                "to_bus": row["to_bus"],
+                "flow_mw": round(float(row["flow_mw"]), 3),
+                "limit_mw": round(float(row["limit_mw"]), 3),
+                "headroom_mw": round(float(row["headroom_mw"]), 3),
+                "loading_pct": round(float(row["loading_pct"]), 3),
+            }
+            for row in _line_snapshot_records(artifacts, focus_hour)
+        ],
     }
 
 
