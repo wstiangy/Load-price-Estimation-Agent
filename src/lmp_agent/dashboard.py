@@ -557,19 +557,19 @@ def _topology_plot_html(artifacts: WorkflowArtifacts, focus_hour: int) -> str:
 
     edge_traces = []
     annotations: list[dict[str, Any]] = []
-    max_loading = max((row["loading_pct"] for row in line_snapshot), default=1.0)
     for row in line_snapshot:
         left = row["from_bus"]
         right = row["to_bus"]
         x0, y0 = BUS_POSITIONS[left]
         x1, y1 = BUS_POSITIONS[right]
-        loading_ratio = row["loading_pct"] / max(max_loading, 1e-6)
+        line_color = _loading_color(row["loading_pct"])
+        loading_ratio = min(max(row["loading_pct"] / 100.0, 0.0), 1.0)
         edge_traces.append(
             go.Scatter(
                 x=[x0, x1],
                 y=[y0, y1],
                 mode="lines",
-                line=dict(color=f"rgba(178,74,48,{0.28 + 0.60 * loading_ratio:.3f})", width=2.0 + 2.8 * loading_ratio),
+                line=dict(color=line_color, width=2.2 + 3.2 * loading_ratio),
                 hovertemplate=(
                     f"{row['line_name']}<br>"
                     f"Flow: {row['flow_mw']:+.2f} MW<br>"
@@ -588,11 +588,12 @@ def _topology_plot_html(artifacts: WorkflowArtifacts, focus_hour: int) -> str:
                 text=f"{row['flow_mw']:+.0f} MW<br>{row['headroom_mw']:.0f} MW margin",
                 showarrow=False,
                 font=dict(size=9, color="#5a241a"),
-                bgcolor="rgba(255,248,244,0.90)",
-                bordercolor="rgba(178,74,48,0.16)",
+                bgcolor="rgba(255,252,248,0.92)",
+                bordercolor=line_color,
                 borderpad=2,
             )
         )
+        annotations.append(_line_flow_arrow_annotation(x0, y0, x1, y1, row["flow_mw"], line_color))
 
     nodes = list(graph.nodes())
     node_trace = go.Scatter(
@@ -678,6 +679,25 @@ def _topology_plot_html(artifacts: WorkflowArtifacts, focus_hour: int) -> str:
         xaxis=dict(visible=False, range=[-0.02, 1.00]),
         yaxis=dict(visible=False, range=[-0.04, 0.82]),
         annotations=annotations,
+    )
+    fig.add_annotation(
+        x=0.995,
+        y=0.80,
+        xanchor="right",
+        yanchor="top",
+        align="left",
+        showarrow=False,
+        bgcolor="rgba(255,255,255,0.90)",
+        bordercolor="rgba(18,37,61,0.12)",
+        borderpad=6,
+        font=dict(size=10, color="#17395c"),
+        text=(
+            "<b>Line Loading Legend</b><br>"
+            "<span style='color:#2e8b57'>Green</span>: loading < 60%<br>"
+            "<span style='color:#d4a017'>Amber</span>: 60% - 85%<br>"
+            "<span style='color:#c0392b'>Red</span>: > 85%<br>"
+            "Arrow shows positive flow direction"
+        ),
     )
     return fig.to_html(full_html=False, include_plotlyjs="cdn")
 
@@ -1045,6 +1065,52 @@ def _rgba_from_hex(color: str, alpha: float) -> str:
     g = int(color[2:4], 16)
     b = int(color[4:6], 16)
     return f"rgba({r},{g},{b},{alpha})"
+
+
+def _loading_color(loading_pct: float) -> str:
+    if loading_pct >= 85.0:
+        return "#c0392b"
+    if loading_pct >= 60.0:
+        return "#d4a017"
+    return "#2e8b57"
+
+
+def _line_flow_arrow_annotation(
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    flow_mw: float,
+    color: str,
+) -> dict[str, Any]:
+    if flow_mw >= 0:
+        start_x, start_y, end_x, end_y = x0, y0, x1, y1
+    else:
+        start_x, start_y, end_x, end_y = x1, y1, x0, y0
+
+    dx = end_x - start_x
+    dy = end_y - start_y
+    tail_x = start_x + 0.36 * dx
+    tail_y = start_y + 0.36 * dy
+    head_x = start_x + 0.58 * dx
+    head_y = start_y + 0.58 * dy
+    return {
+        "x": head_x,
+        "y": head_y,
+        "ax": tail_x,
+        "ay": tail_y,
+        "xref": "x",
+        "yref": "y",
+        "axref": "x",
+        "ayref": "y",
+        "showarrow": True,
+        "arrowhead": 3,
+        "arrowsize": 1.1,
+        "arrowwidth": 1.8,
+        "arrowcolor": color,
+        "text": "",
+        "opacity": 0.95,
+    }
 
 
 def main() -> None:
